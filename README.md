@@ -74,7 +74,7 @@ Since `extension.js` is minified with different variable names in each version, 
 ### Finding the Diff Patch Point
 - **Anchor string:** `"leftTempFileProvider.createFile"` — a unique log message in the diff function's catch block
 - **Context matching:** From that anchor, finds the `createFile(VAR,"").uri}` pattern that ends the catch block — this is where the CRLF check is inserted
-- **Variable discovery:** Looks backwards for `let URIVAR=XX.Uri.file(PATHVAR),$=""` to find the variable names for the left-side URI, the temp file provider, and the file path — these are used to construct the correct `G=v.createFile(K,$).uri` call for that version
+- **Variable discovery:** Looks backwards for `let URIVAR=XX.Uri.file(PATHVAR),CONTENTVAR=""` to find the variable names for the left-side URI, the temp file provider, the file content, and the file path — these are used to construct the correct patch for that version. Note: the content variable name varies across versions (`$` in 2.1.71/2.1.73, `Z` in 2.1.72). Since `$` is a valid JS identifier but is not matched by `\w` in regex, the capture group uses `[\w$]+` to handle both cases.
 
 ### Safety Features
 - Creates a `.bak` backup before modifying
@@ -115,6 +115,6 @@ When the Claude Code extension updates, the patched `extension.js` is replaced w
 
 ## Notes
 
-- This fix was developed and tested on Claude Code extension versions 2.1.69 and 2.1.71 on both Windows and Linux (Remote SSH).
+- This fix was developed and tested on Claude Code extension versions 2.1.69, 2.1.71, 2.1.72, and 2.1.73 on both Windows and Linux (Remote SSH).
 - The underlying bug should ideally be fixed in the extension itself. Consider upvoting or commenting on the relevant issue at https://github.com/anthropics/claude-code/issues if one exists.
 - The patch only modifies the side-by-side diff preview mechanism. It does not affect how edits are actually applied to files.

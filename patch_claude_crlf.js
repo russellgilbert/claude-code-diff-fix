@@ -20,7 +20,16 @@
  * Usage: node patch_claude_crlf.js [path-to-extension.js]
  *   If no path given, auto-detects the newest Claude Code extension.
  * 
- * Version: 1.0.0
+ * Version History:
+ *   1.0.0 - Initial release. Worked for extension versions up to 2.1.71.
+ *
+ *   1.0.1 - Fixed compatibility with extension versions where the content
+ *           variable in the diff function is not named '$'. In 2.1.71 the
+ *           variable was '$' (hardcoded in v1.0.0). In 2.1.72 it changed to
+ *           'Z', breaking the patch. In 2.1.73 it reverted to '$'. The fix
+ *           was to dynamically capture the variable name using ([\w$]+)
+ *           instead of a hardcoded \$ in the regex — note that '$' is a valid
+ *           JS identifier but is not matched by \w in regex.
  */
 
 const fs = require('fs');
@@ -108,7 +117,7 @@ function findEditFunction(content) {
 function findDiffPatchPoint(content) {
   // The diff function contains 'leftTempFileProvider.createFile' in a catch block.
   // We need to insert our CRLF check after the catch block closes.
-  // Pattern: ...createFile(VAR,"").uri}let VAR=EDITFUNC($,...
+  // Pattern: ...createFile(VAR,"").uri}let VAR=EDITFUNC(CONTENTVAR,...
   const ltfpIdx = content.indexOf('leftTempFileProvider.createFile');
   if (ltfpIdx === -1) return null;
 
@@ -120,12 +129,13 @@ function findDiffPatchPoint(content) {
   const filePathVar = catchEndMatch[1]; // the variable holding the file path
 
   // Find the left URI variable and the createFile provider variable
-  // Look backwards from ltfpIdx for: let URIVAR=XX.Uri.file(PATHVAR),$="";
+  // Look backwards from ltfpIdx for: let URIVAR=XX.Uri.file(PATHVAR),CONTENTVAR="";
   const beforeArea = content.substring(ltfpIdx - 400, ltfpIdx);
-  const uriMatch = beforeArea.match(/let\s+(\w+)=\w+\.Uri\.file\((\w+)\),\$=""/);
+  const uriMatch = beforeArea.match(/let\s+(\w+)=\w+\.Uri\.file\((\w+)\),([\w$]+)=""/);
   if (!uriMatch) return null;
 
-  const leftUriVar = uriMatch[1]; // G in our version
+  const leftUriVar = uriMatch[1]; // G in 2.1.71
+  const contentVar = uriMatch[3]; // $ in 2.1.71, Z in 2.1.72
 
   // Find the provider variable: PROVIDER.createFile(VAR,"").uri
   const providerMatch = searchArea.match(/(\w+)\.createFile\(\w+,""\)\.uri\}/);
@@ -140,6 +150,7 @@ function findDiffPatchPoint(content) {
   return {
     filePathVar,
     leftUriVar,
+    contentVar,
     providerVar,
     insertAfter,
     insertAfterIdx
@@ -217,11 +228,12 @@ console.log('Found diff patch point: ' + diffPoint.insertAfter);
 console.log('  URI var:', diffPoint.leftUriVar, ' Provider var:', diffPoint.providerVar, ' Path var:', diffPoint.filePathVar);
 
 // Check if patch 2 is already applied
-const patch2Marker = diffPoint.insertAfter + 'if($.includes(';
+const cv = diffPoint.contentVar;
+const patch2Marker = diffPoint.insertAfter + 'if(' + cv + '.includes(';
 if (content.includes(patch2Marker)) {
   console.log('  -> Patch 2 (diff left-side CRLF) appears to be already applied, skipping.');
 } else {
-  const crlf_check = 'if($.includes("' + B + 'r' + B + 'n")){$=$.replace(' + RN_REGEX + ',' + N_STR + ');' + diffPoint.leftUriVar + '=' + diffPoint.providerVar + '.createFile(' + diffPoint.filePathVar + ',$).uri}';
+  const crlf_check = 'if(' + cv + '.includes("' + B + 'r' + B + 'n")){' + cv + '=' + cv + '.replace(' + RN_REGEX + ',' + N_STR + ');' + diffPoint.leftUriVar + '=' + diffPoint.providerVar + '.createFile(' + diffPoint.filePathVar + ',' + cv + ').uri}';
 
   content = content.replace(
     diffPoint.insertAfter,
