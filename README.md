@@ -20,13 +20,45 @@ The Claude Code VS Code extension has a function that applies proposed edits to 
 
 Single-line edits aren't affected because the `oldString` has no newline characters to mismatch.
 
+## Applying the Fix
+
+### Run the Script on Windows
+
+1. Save `patch_claude_crlf.js` anywhere on your Windows system.
+2. Open a Windows Command Prompt and run: `node \path\to\patch_claude_crlf.js`.
+   - The script will automatically find the newest Claude Code extension in the .vscode directory under your home directory.
+   - You can also specify a file path to the extension.js file: `node \path\to\patch_claude_crlf.js \path\to\extension.js`.
+   - The script should report "Patches applied successfully!"
+3. Reload VS Code (`Ctrl+Shift+P` → "Developer: Reload Window").
+4. Create a text file and type a few lines into it.
+   - Verify it contains CRLFs by looking for the CRLF indicator in the lower right corner of VS Code while the file is in focus.
+5. Ensure that Claude Code is in "Ask before edits" mode.
+   - Then ask Claude to make an edit to the file by changing two consecutive lines.
+   - Verify that the side-by-side diff tab opens as it should.
+
+### Run the script again on the SSH server if you use VS Code to connect to your files via SSH
+1. Save `patch_claude_crlf.js` anywhere on the system you connect to via SSH.
+2. Open a command line on the SSH system and run: `node /path/to/patch_claude_crlf.js`.
+   - The script will automatically find the newest Claude Code extension under `~/.vscode-server/extensions/`.
+   - You can also specify a file path to the extension.js file: `node /path/to/patch_claude_crlf.js /path/to/extension.js`.
+   - The script should report "Patches applied successfully!"
+3. Reload VS Code (`Ctrl+Shift+P` → "Developer: Reload Window").
+4. Copy the test file that you created in Windows to the SSH system, and keep the CRLFs in it.
+5. Ensure that Claude Code is in "Ask before edits" mode.
+   - Then ask Claude to make an edit to the file by changing two consecutive lines.
+   - Verify that the side-by-side diff tab opens as it should.
+
+## Re-applying After Extension Updates
+
+When the Claude Code extension updates, the patched `extension.js` is replaced with a new version. You'll need to re-run the patch script. The `.bak` file from the previous version will not be overwritten.
+
 ## The Fix
 
 Two patches to the extension's `extension.js` file:
 
 ### Patch 1 — Edit Function (CRLF normalization)
 
-At the start of the edit-applying function, normalize all `\r\n` to `\n` in both the file content and the edit strings (oldString/newString) before attempting to match:
+At the start of the edit-applying function, the script normalizes all `\r\n` to `\n` in both the file content and the edit strings (oldString/newString) before attempting to match:
 
 ```js
 // Before (minified, variable names vary by version):
@@ -80,38 +112,6 @@ Since `extension.js` is minified with different variable names in each version, 
 - Creates a `.bak` backup before modifying
 - Idempotent — detects and skips already-applied patches
 - Validates output bytes to ensure `\r\n` was written as escape sequences (`\x5c\x72\x5c\x6e`) not raw CR/LF bytes (`\x0d\x0a`)
-
-## Applying the Fix
-
-### Run the Script on Windows
-
-1. Save `patch_claude_crlf.js` anywhere on your Windows system.
-2. Open a Windows Command Prompt and run: `node \path\to\patch_claude_crlf.js`.
-   - The script will automatically find the newest Claude Code extension in the .vscode directory under your home directory.
-   - You can also specify a file path to the extension.js file: `node \path\to\patch_claude_crlf.js \path\to\extension.js`.
-   - The script should report "Patches applied successfully!"
-3. Reload VS Code (`Ctrl+Shift+P` → "Developer: Reload Window").
-4. Create a text file and type a few lines into it.
-   - Verify it contains CRLFs by looking for the CRLF indicator in the lower right corner of VS Code while the file is in focus.
-5. Ensure that Claude Code is in "Ask before edits" mode.
-   - Then ask Claude to make an edit to the file by changing two consecutive lines.
-   - Verify that the side-by-side diff tab opens as it should.
-
-### If you use VS Code to connect to your files via SSH, run the script again on the SSH server
-1. Save `patch_claude_crlf.js` anywhere on the system you connect to via SSH.
-2. Open a command line on the SSH system and run: `node /path/to/patch_claude_crlf.js`.
-   - The script will automatically find the newest Claude Code extension under `~/.vscode-server/extensions/`.
-   - You can also specify a file path to the extension.js file: `node /path/to/patch_claude_crlf.js /path/to/extension.js`.
-   - The script should report "Patches applied successfully!"
-3. Reload VS Code (`Ctrl+Shift+P` → "Developer: Reload Window").
-4. Copy the test file that you created in Windows to the SSH system, and keep the CRLFs in it.
-5. Ensure that Claude Code is in "Ask before edits" mode.
-   - Then ask Claude to make an edit to the file by changing two consecutive lines.
-   - Verify that the side-by-side diff tab opens as it should.
-
-## Re-applying After Extension Updates
-
-When the Claude Code extension updates, the patched `extension.js` is replaced with a new version. You'll need to re-run the patch script. The `.bak` file from the previous version will not be overwritten.
 
 ## Notes
 
