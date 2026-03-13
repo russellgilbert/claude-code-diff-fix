@@ -36,7 +36,7 @@ Single-line edits aren't affected because the `oldString` has no newline charact
    - Then ask Claude to make an edit to the file by changing two consecutive lines.
    - Verify that the side-by-side diff tab opens as it should.
 
-### Run the script again on the SSH server if you use VS Code to connect to your files via SSH
+### Run the Script Again on the SSH Server (if VS Code connects to your files via SSH)
 1. Save `patch_claude_crlf.js` anywhere on the system you connect to via SSH.
 2. Open a command line on the SSH system and run: `node /path/to/patch_claude_crlf.js`.
    - The script will automatically find the newest Claude Code extension under `~/.vscode-server/extensions/`.
@@ -52,9 +52,9 @@ Single-line edits aren't affected because the `oldString` has no newline charact
 
 When the Claude Code extension updates, the patched `extension.js` is replaced with a new version. You'll need to re-run the patch script. The `.bak` file from the previous version will not be overwritten.
 
-## The Fix
+## What's Being Patched
 
-Two patches to the extension's `extension.js` file:
+Two patches are made to the extension's `extension.js` file:
 
 ### Patch 1 — Edit Function (CRLF normalization)
 
