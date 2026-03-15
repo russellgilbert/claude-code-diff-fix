@@ -17,9 +17,10 @@
  * The patches are found by content signatures, not variable names,
  * so this works across minified versions with different variable names.
  *
- * Usage: node patch_claude_crlf.js [path-to-extension.js]
+ * Usage: node patch_claude_crlf.js [path-to-extension-dir-or-file]
+ *   Accepts a path to extension.js or to the extension directory.
  *   If no path given, auto-detects the newest Claude Code extension.
- * 
+ *
  * Version History:
  *   1.0.0 - Initial release. Worked for extension versions up to 2.1.71.
  *
@@ -30,6 +31,10 @@
  *           was to dynamically capture the variable name using ([\w$]+)
  *           instead of a hardcoded \$ in the regex — note that '$' is a valid
  *           JS identifier but is not matched by \w in regex.
+ *
+ *   1.0.2 - Accept a directory path as argument (auto-appends extension.js).
+ *           Also extracts version number from path for better logging.
+ *           Verified working on 2.1.75 and 2.1.76.
  */
 
 const fs = require('fs');
@@ -162,11 +167,22 @@ let targetPath = process.argv[2];
 let info;
 
 if (targetPath) {
+  // If a directory was given, look for extension.js inside it
+  if (fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()) {
+    const jsInDir = path.join(targetPath, 'extension.js');
+    if (fs.existsSync(jsInDir)) {
+      targetPath = jsInDir;
+    } else {
+      console.error('Error: No extension.js found in directory:', targetPath);
+      process.exit(1);
+    }
+  }
   if (!fs.existsSync(targetPath)) {
     console.error('Error: File not found:', targetPath);
     process.exit(1);
   }
-  info = { path: targetPath, version: 'unknown', dir: path.dirname(targetPath) };
+  const verMatch = targetPath.match(/(\d+\.\d+\.\d+)/);
+  info = { path: targetPath, version: verMatch ? verMatch[1] : 'unknown', dir: path.dirname(targetPath) };
 } else {
   info = findExtensionJs();
   if (!info) {
