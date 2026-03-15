@@ -27,7 +27,7 @@ Single-line edits aren't affected because the `oldString` has no newline charact
 1. Save `patch_claude_crlf.js` anywhere on your Windows system.
 2. Open a Windows Command Prompt and run: `node \path\to\patch_claude_crlf.js`.
    - The script will automatically find the newest Claude Code extension in the .vscode directory under your home directory.
-   - You can also specify a file path to the extension.js file: `node \path\to\patch_claude_crlf.js \path\to\extension.js`.
+   - You can also specify a path to the extension directory or the extension.js file: `node /path/to/patch_claude_crlf.js /path/to/extension-dir-or-file`.
    - The script should report "Patches applied successfully!"
 3. Reload VS Code (`Ctrl+Shift+P` → "Developer: Reload Window").
 4. Create a text file and type a few lines into it.
@@ -40,7 +40,7 @@ Single-line edits aren't affected because the `oldString` has no newline charact
 1. Save `patch_claude_crlf.js` anywhere on the system you connect to via SSH.
 2. Open a command line on the SSH system and run: `node /path/to/patch_claude_crlf.js`.
    - The script will automatically find the newest Claude Code extension under `~/.vscode-server/extensions/`.
-   - You can also specify a file path to the extension.js file: `node /path/to/patch_claude_crlf.js /path/to/extension.js`.
+   - You can also specify a path to the extension directory or the extension.js file: `node /path/to/patch_claude_crlf.js /path/to/extension-dir-or-file`.
    - The script should report "Patches applied successfully!"
 3. Reload VS Code (`Ctrl+Shift+P` → "Developer: Reload Window").
 4. Copy the test file that you created in Windows to the SSH system, and keep the CRLFs in it.
