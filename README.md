@@ -115,6 +115,6 @@ Since `extension.js` is minified with different variable names in each version, 
 
 ## Notes
 
-- This fix was developed and tested on Claude Code extension versions 2.1.56, 2.1.69, 2.1.71, 2.1.72, 2.1.73, 2.1.74, 2.1.75, and 2.1.76 on both Windows and Linux (Remote SSH).
+- This fix was developed and tested on Claude Code extension versions 2.1.56, 2.1.69, 2.1.71, 2.1.72, 2.1.73, 2.1.74, 2.1.75, 2.1.76, 2.1.77, and 2.1.78 on both Windows and Linux (Remote SSH).
 - The underlying bug should ideally be fixed in the extension itself. Consider upvoting or commenting on the relevant issue at https://github.com/anthropics/claude-code/issues if one exists.
 - The patch only modifies the side-by-side diff preview mechanism. It does not affect how edits are actually applied to files.
