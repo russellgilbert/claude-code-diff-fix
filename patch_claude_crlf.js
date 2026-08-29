@@ -52,6 +52,20 @@
  *           groups from (\w+) to ([\w$]+) (the same fix already applied earlier
  *           to the content-var capture in findDiffPatchPoint). Verified working
  *           on 2.1.121, 2.1.122, and 2.1.123.
+ *
+ *   2.0.2 - Allow '$' in every identifier the script captures, not just the two
+ *           spots fixed in 1.0.1 and 2.0.1. In 2.1.251 the minifier started using
+ *           '$' as a function parameter name (function oz0($,Q)) and inside module
+ *           aliases (v$.Uri.file), so both findEditFunction and findDiffPatchPoint
+ *           failed with "Could not locate the edit function". All (\w+) captures
+ *           are now ([\w$]+).
+ *           Also stopped writing the patches with String.replace() replacement
+ *           strings, where a '$' in the generated code would be treated as a
+ *           special pattern ($&, $`, $', $$, $1). Patch 1 now uses a replacer
+ *           function; Patch 2 is spliced in at the exact index found, which also
+ *           fixes it targeting the wrong site if its anchor text is not unique.
+ *           The three patch sites themselves are unchanged in 2.1.251.
+ *           Verified working on 2.1.241 and 2.1.251.
  */
 
 const fs = require('fs');
@@ -105,7 +119,7 @@ function findEditFunction(content) {
   // The edit function has this structure:
   //   function XX(a,b){let c=a,d=[];if(!a&&b.length===1&&b[0]&&b[0].oldString===""...
   // It contains unique error messages we can use to verify.
-  const match = content.match(/function\s+([\w$]+)\((\w+),(\w+)\)\{let\s+(\w+)=\2,\w+=\[\];if\(!\2/);
+  const match = content.match(/function\s+([\w$]+)\(([\w$]+),([\w$]+)\)\{let\s+([\w$]+)=\2,[\w$]+=\[\];if\(!\2/);
   if (match) {
     const funcName = match[1];
     const param1 = match[2];
@@ -120,7 +134,7 @@ function findEditFunction(content) {
   }
 
   // Try matching already-patched version: function XX(a,b){a=a.replace(...)...let c=a,
-  const patchedMatch = content.match(/function\s+([\w$]+)\((\w+),(\w+)\)\{\2=\2\.replace\(/);
+  const patchedMatch = content.match(/function\s+([\w$]+)\(([\w$]+),([\w$]+)\)\{\2=\2\.replace\(/);
   if (patchedMatch) {
     const funcName = patchedMatch[1];
     const param1 = patchedMatch[2];
@@ -145,7 +159,7 @@ function findDiffPatchPoint(content) {
 
   // Find the createFile(X,"").uri} that ends the catch block
   const searchArea = content.substring(ltfpIdx, ltfpIdx + 200);
-  const catchEndMatch = searchArea.match(/createFile\((\w+),""\)\.uri\}/);
+  const catchEndMatch = searchArea.match(/createFile\(([\w$]+),""\)\.uri\}/);
   if (!catchEndMatch) return null;
 
   const filePathVar = catchEndMatch[1]; // the variable holding the file path
@@ -153,14 +167,14 @@ function findDiffPatchPoint(content) {
   // Find the left URI variable and the createFile provider variable
   // Look backwards from ltfpIdx for: let URIVAR=XX.Uri.file(PATHVAR),CONTENTVAR="";
   const beforeArea = content.substring(ltfpIdx - 400, ltfpIdx);
-  const uriMatch = beforeArea.match(/let\s+(\w+)=\w+\.Uri\.file\((\w+)\),([\w$]+)=""/);
+  const uriMatch = beforeArea.match(/let\s+([\w$]+)=[\w$]+\.Uri\.file\(([\w$]+)\),([\w$]+)=""/);
   if (!uriMatch) return null;
 
   const leftUriVar = uriMatch[1]; // G in 2.1.71
   const contentVar = uriMatch[3]; // $ in 2.1.71, Z in 2.1.72
 
   // Find the provider variable: PROVIDER.createFile(VAR,"").uri
-  const providerMatch = searchArea.match(/(\w+)\.createFile\(\w+,""\)\.uri\}/);
+  const providerMatch = searchArea.match(/([\w$]+)\.createFile\([\w$]+,""\)\.uri\}/);
   if (!providerMatch) return null;
 
   const providerVar = providerMatch[1]; // v in our version
@@ -245,7 +259,9 @@ if (editFunc.alreadyPatched) {
     process.exit(1);
   }
 
-  content = content.replace(oldStr, newStr);
+  // Replacer function, not a replacement string: newStr can contain '$' (the
+  // minifier uses it as an identifier), and $&, $`, $', $$, $1 would be substituted.
+  content = content.replace(oldStr, function () { return newStr; });
   console.log('  -> Patch 1 applied: CRLF normalization in edit function');
 }
 
@@ -262,16 +278,16 @@ console.log('  URI var:', diffPoint.leftUriVar, ' Provider var:', diffPoint.prov
 
 // Check if patch 2 is already applied
 const cv = diffPoint.contentVar;
-const patch2Marker = diffPoint.insertAfter + 'if(' + cv + '.includes(';
-if (content.includes(patch2Marker)) {
+const insertEnd = diffPoint.insertAfterIdx + diffPoint.insertAfter.length;
+if (content.startsWith('if(' + cv + '.includes(', insertEnd)) {
   console.log('  -> Patch 2 (diff left-side CRLF) appears to be already applied, skipping.');
 } else {
   const crlf_check = 'if(' + cv + '.includes("' + B + 'r' + B + 'n")){' + cv + '=' + cv + '.replace(' + RN_REGEX + ',' + N_STR + ');' + diffPoint.leftUriVar + '=' + diffPoint.providerVar + '.createFile(' + diffPoint.filePathVar + ',' + cv + ').uri}';
 
-  content = content.replace(
-    diffPoint.insertAfter,
-    diffPoint.insertAfter + crlf_check
-  );
+  // Splice at the exact index found. The insertAfter string is not unique in the
+  // file (a second diff function later on can produce the same minified text),
+  // so a plain content.replace() could patch the wrong site.
+  content = content.slice(0, insertEnd) + crlf_check + content.slice(insertEnd);
   console.log('  -> Patch 2 applied: CRLF normalization in diff left-side');
 }
 

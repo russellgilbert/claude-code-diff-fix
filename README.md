@@ -132,7 +132,10 @@ Since `extension.js` is minified with different variable names in each version, 
 - **Variable discovery:** Looks backwards for `let URIVAR=XX.Uri.file(PATHVAR),$=""` to find the variable names for the left-side URI, the temp file provider, and the file path — these are used to construct the correct `G=v.createFile(K,$).uri` call for that version
 
 ### Gotcha: `$` as a Variable or Function Name
-The minifier sometimes uses `$` in identifiers — both as a standalone variable (e.g., the file content variable in the diff function) and as a leading character in a function name (e.g., the edit function was renamed from `fc` to `$c` in 2.1.121). In JavaScript regex, `\w` does **not** match `$`, so the script uses `[\w$]+` instead of `\w+` when capturing identifiers that could contain `$`. This tripped us up between versions 2.1.71 (content var `$`) and 2.1.72 (`Z`) and back to 2.1.73 (`$`), and again at 2.1.121 when the edit function name itself became `$c`.
+The minifier sometimes uses `$` in identifiers — as a standalone variable (the file content variable in the diff function), as a leading character in a function name (the edit function was renamed from `fc` to `$c` in 2.1.121), as a function parameter name (`function oz0($,Q)` in 2.1.251), and inside module aliases (`v$.Uri.file` in 2.1.251). In JavaScript regex, `\w` does **not** match `$`, so the script uses `[\w$]+` for **every** identifier it captures. This tripped us up repeatedly: 2.1.71 (content var `$`) → 2.1.72 (`Z`) → 2.1.73 (`$`), again at 2.1.121 when the edit function name became `$c`, and again at 2.1.251 when parameter names and module aliases picked up `$`. The remaining `\w+` captures were all widened in script version 2.0.2, so this class of breakage should not recur.
+
+### Gotcha: `$` in the Replacement String
+`String.prototype.replace()` treats `$&`, `` $` ``, `$'`, `$$`, and `$1` in the *replacement string* as special patterns. Since the generated patch code now routinely contains `$` (e.g. `$=$.replace(/\r\n/g,"\n")`), the script builds Patch 1 with a replacer **function** rather than a replacement string. Patch 2 is spliced in at an explicit byte index instead of using `replace()` at all — the `createFile(X,"").uri}` anchor is not unique in the file (a second, unrelated diff function later in `extension.js` can minify to the same text), so a plain `replace()` could patch the wrong site.
 
 ### Finding the IS_FULL_EDITOR Checks (Patch 3)
 - **File:** `webview/index.js` in the extension directory
@@ -147,8 +150,9 @@ The minifier sometimes uses `$` in identifiers — both as a standalone variable
 
 ## Notes
 
-- Patches 1 & 2 (CRLF) were developed and tested on extension versions 2.1.56 through 2.1.123.
-- Patch 3 (IS_FULL_EDITOR) was developed and tested on extension versions 2.1.59 through 2.1.123. It is not needed on versions before 2.1.59 since the IS_FULL_EDITOR check did not exist yet.
+- Patches 1 & 2 (CRLF) were developed and tested on extension versions 2.1.56 through 2.1.251.
+- Patch 3 (IS_FULL_EDITOR) was developed and tested on extension versions 2.1.59 through 2.1.251. It is not needed on versions before 2.1.59 since the IS_FULL_EDITOR check did not exist yet.
+- All three patch sites are structurally unchanged through 2.1.251. Every breakage so far has been in the script's regexes, not in the extension's logic — when the script reports "Could not locate the edit function", check for a new identifier shape before assuming the extension was rewritten.
 - All patches tested on both Windows and Linux (Remote SSH).
 - The underlying bug should ideally be fixed in the extension itself. Consider upvoting or commenting on the relevant issue at https://github.com/anthropics/claude-code/issues if one exists.
 - The patch only modifies the side-by-side diff preview mechanism. It does not affect how edits are actually applied to files.
