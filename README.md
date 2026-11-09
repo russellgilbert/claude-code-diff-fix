@@ -98,9 +98,9 @@ let W=Fk($ ...
 
 Starting in extension v2.1.59, the webview's permission handler skips opening the diff tab when `window.IS_FULL_EDITOR` is `true`, falling back to inline accept/reject in the chat. This was intended to differentiate between editor-tab mode and sidebar mode, but the `IS_FULL_EDITOR` flag is set incorrectly during panel deserialization — VS Code reports the wrong `viewColumn` before the layout is finalized, so the Claude panel in the second tab group is misidentified as being in the first group.
 
-This patch removes the `IS_FULL_EDITOR` guard from the permission handler in `webview/index.js`, restoring the diff tab behavior. The guard appears in two shapes:
+This patch removes the `IS_FULL_EDITOR` guards from `webview/index.js`, restoring the diff tab behavior. They appear in two shapes, in two different places:
 
-**Standalone form (ext v2.1.59 through ~v2.1.313):** the check is its own `if`/`return`, applied once per tool handler (Edit, Write). The patch deletes the whole statement.
+**Standalone form (ext v2.1.59 onward, still present in 2.1.319):** the check is its own `if`/`return` in the permission handler, once per tool handler (Edit, Write). It controls whether the diff tab opens at all. The patch deletes the whole statement.
 
 ```js
 // Before:
@@ -117,7 +117,7 @@ if($.toolName===EditTool.toolName){
   let X=await J.openDiff(...);
 ```
 
-**Compound form (ext v2.1.319+):** both tool handlers were consolidated into a single callback, and the `IS_FULL_EDITOR` check was folded into a larger disjunction alongside other guards. The patch strips just the `IS_FULL_EDITOR` disjunct and its adjacent `||`, leaving the other guards intact.
+**Compound form (present in at least 2.1.314 and 2.1.319; earlier bound not established):** in a separate helper that covers both tools and decides how an accept is routed, the `IS_FULL_EDITOR` check is folded into a larger disjunction alongside other guards. The patch strips just the `IS_FULL_EDITOR` disjunct and its adjacent `||`, leaving the other guards intact.
 
 ```js
 // Before:
@@ -127,7 +127,16 @@ if(window.IS_FULL_EDITOR||!t.acceptDiff||y!==null)return;
 if(!t.acceptDiff||y!==null)return;
 ```
 
-Both forms can coexist in the same version (2.1.319 still has two standalone instances alongside the compound one), so the script applies both sets of patterns in a single run.
+Both forms coexist in the same version — 2.1.314 and 2.1.319 each have two standalone instances alongside one compound instance — so the script applies both sets of patterns in a single run.
+
+The two shapes are not duplicates of each other; they gate different things, and stripping only one leaves half the behavior broken:
+
+- The **standalone** guards decide whether the diff tab opens. With them in place, the edit falls back to inline accept/reject in the chat and no tab appears.
+- The **compound** guard decides how an accept is routed. The helper returns the file path only when every disjunct passes; the caller then wires up `acceptDiff`. When the helper returns early, the caller falls through to `e.accept(y||e.inputs)` — plain inline accept — so the diff tab's ✓ and the per-hunk ✓ have nothing behind them and acceptance only works from the chat panel.
+
+The extension's output channel distinguishes the two routes. With the compound guard still active, accepting logs `diff_accepted_from_panel` and `accept_diff from panel ... found: true`. With it stripped, accepting from the tab logs `hunk_accepted <uri> line N` and `diff_accepted` with no panel lines.
+
+Because the standalone pattern alone was matching 0 occurrences in 2.1.314 and 2.1.319 once the standalone guards were gone, earlier versions of the script reported "Patch 3 appears to be already applied" while the compound guard was still active. If in-tab accept does not work, re-run the script and check the reported count rather than trusting the already-applied message.
 
 ## How the Patch Script Works
 
@@ -159,8 +168,8 @@ The minifier sometimes uses `$` in identifiers — as a standalone variable (the
   - Compound (middle): `||window.IS_FULL_EDITOR||` → `||`
   - Compound (trailing): `||window.IS_FULL_EDITOR)` → `)`
 - **Why paren-anchored for the compound forms:** `IS_FULL_EDITOR` is also used legitimately in CSS class ternaries (`window.IS_FULL_EDITOR?cls:""`), conditional rendering (`!window.IS_FULL_EDITOR&&...`), and session state (`isFullEditor:window.IS_FULL_EDITOR`). Anchoring on `(` and `)` matches only the guard disjunction and leaves these intact.
-- **Action:** All four patterns are applied globally in a single run — in 2.1.319 the script removes 2 standalone + 1 compound = 3 occurrences
-- **Detection:** If no patterns match, assumes already patched
+- **Action:** All four patterns are applied globally in a single run — in both 2.1.314 and 2.1.319 the script removes 2 standalone + 1 compound = 3 occurrences, out of 9 total `window.IS_FULL_EDITOR` uses
+- **Detection:** If no patterns match, assumes already patched. This is an absence-of-match test, not a check that the guards are gone, so a future version using a shape none of the four patterns cover would again be reported as already patched while its guard stayed active.
 
 ### Safety Features
 - Creates `.bak` backups for both `extension.js` and `webview/index.js` before modifying
