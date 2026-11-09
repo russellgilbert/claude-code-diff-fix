@@ -127,15 +127,17 @@ Since `extension.js` is minified with different variable names in each version, 
 - **Variable extraction:** The regex captures the function name and parameter names, which are used to construct the patch with the correct variable names for that version
 
 ### Finding the Diff Patch Point
-- **Anchor string:** `"leftTempFileProvider.createFile"` — a unique log message in the diff function's catch block
-- **Context matching:** From that anchor, finds the `createFile(VAR,"").uri}` pattern that ends the catch block — this is where the CRLF check is inserted
-- **Variable discovery:** Looks backwards for `let URIVAR=XX.Uri.file(PATHVAR),$=""` to find the variable names for the left-side URI, the temp file provider, and the file path — these are used to construct the correct `G=v.createFile(K,$).uri` call for that version
+- **Anchor string:** `"leftTempFileProvider.createFile"` — a log message in the diff function's catch block
+- **Context matching:** From that anchor, matches through to the end of the catch block: the log string, anything up to the end of the `info()` call, then `LEFTURIVAR=PROVIDER.createFile(PATHVAR,<anything>).uri}`. That one pattern covers both shapes seen so far — `createFile(r,"")` up to 2.1.314 and `createFile(r,b)` from 2.1.319 — and yields the left-side URI, temp file provider, and file path variable names. The CRLF check is inserted at the closing `}`.
+- **Content variable:** Read from the statement immediately after the catch block, which passes the left-side content to the edit function: `let X=EDITFUNC(CONTENTVAR,EDITSVAR)`. The edit function's name is already known from Patch 1. This is the variable the diff's right-hand side is built from, so it is the one that has to be normalized.
+
+Earlier versions of the script found the content variable by looking backwards for `let URIVAR=XX.Uri.file(PATHVAR),CONTENTVAR=""`. That broke in 2.1.319, which moved both variables into the middle of a longer declaration list so nothing was preceded by `let`. Reading the variable from the edit-function call does not depend on where it was declared.
 
 ### Gotcha: `$` as a Variable or Function Name
 The minifier sometimes uses `$` in identifiers — as a standalone variable (the file content variable in the diff function), as a leading character in a function name (the edit function was renamed from `fc` to `$c` in 2.1.121), as a function parameter name (`function oz0($,Q)` in 2.1.251), and inside module aliases (`v$.Uri.file` in 2.1.251). In JavaScript regex, `\w` does **not** match `$`, so the script uses `[\w$]+` for **every** identifier it captures. This tripped us up repeatedly: 2.1.71 (content var `$`) → 2.1.72 (`Z`) → 2.1.73 (`$`), again at 2.1.121 when the edit function name became `$c`, and again at 2.1.251 when parameter names and module aliases picked up `$`. The remaining `\w+` captures were all widened in script version 2.0.2, so this class of breakage should not recur.
 
 ### Gotcha: `$` in the Replacement String
-`String.prototype.replace()` treats `$&`, `` $` ``, `$'`, `$$`, and `$1` in the *replacement string* as special patterns. Since the generated patch code now routinely contains `$` (e.g. `$=$.replace(/\r\n/g,"\n")`), the script builds Patch 1 with a replacer **function** rather than a replacement string. Patch 2 is spliced in at an explicit byte index instead of using `replace()` at all — the `createFile(X,"").uri}` anchor is not unique in the file (a second, unrelated diff function later in `extension.js` can minify to the same text), so a plain `replace()` could patch the wrong site.
+`String.prototype.replace()` treats `$&`, `` $` ``, `$'`, `$$`, and `$1` in the *replacement string* as special patterns. Since the generated patch code now routinely contains `$` (e.g. `$=$.replace(/\r\n/g,"\n")`), the script builds Patch 1 with a replacer **function** rather than a replacement string. Patch 2 is spliced in at an explicit byte index instead of using `replace()` at all — the anchor text is not necessarily unique in the file (`extension.js` contains a second, unrelated diff function that can minify to the same text), so a plain `replace()` could patch the wrong site.
 
 ### Finding the IS_FULL_EDITOR Checks (Patch 3)
 - **File:** `webview/index.js` in the extension directory
@@ -150,9 +152,10 @@ The minifier sometimes uses `$` in identifiers — as a standalone variable (the
 
 ## Notes
 
-- Patches 1 & 2 (CRLF) were developed and tested on extension versions 2.1.56 through 2.1.251.
-- Patch 3 (IS_FULL_EDITOR) was developed and tested on extension versions 2.1.59 through 2.1.251. It is not needed on versions before 2.1.59 since the IS_FULL_EDITOR check did not exist yet.
-- All three patch sites are structurally unchanged through 2.1.251. Every breakage so far has been in the script's regexes, not in the extension's logic — when the script reports "Could not locate the edit function", check for a new identifier shape before assuming the extension was rewritten.
+- Patches 1 & 2 (CRLF) were developed and tested on extension versions 2.1.56 through 2.1.319.
+- Patch 3 (IS_FULL_EDITOR) was developed and tested on extension versions 2.1.59 through 2.1.319. It is not needed on versions before 2.1.59 since the IS_FULL_EDITOR check did not exist yet.
+- Breakages up to and including 2.1.251 were all in the script's regexes rather than the extension's logic. 2.1.319 was the first one where the diff function itself changed. When a run fails, check for a new identifier shape first, then for a changed statement shape around the anchor.
+- **2.1.319 added a path check that can change what the left side of the diff contains.** Before opening the diff, the extension calls `VPe`, which walks the file's path with `lstat`, `opendirNofollow` and `readlink` looking for anything that may lead off the machine — network mounts, UNC or WSL paths, symlinks leaving the tree, unreadable ancestry. The open workspace folders are passed in as the `anchor`: trusted roots that let the walk short-circuit. They are **not** a containment boundary, so an ordinary local file outside the workspace still passes. When the check does fail, the extension throws `"Not opened: the path may lead to another machine"`, appends `(file not read)` to the diff tab title, and builds the left side from the edit's `oldString` values joined with newlines rather than from the file on disk. The diff tab still opens, but the left side is not the real file. This is upstream behavior, not something the patch changes. If a diff's left side looks wrong, check the tab title for `(file not read)` first.
 - All patches tested on both Windows and Linux (Remote SSH).
 - The underlying bug should ideally be fixed in the extension itself. Consider upvoting or commenting on the relevant issue at https://github.com/anthropics/claude-code/issues if one exists.
 - The patch only modifies the side-by-side diff preview mechanism. It does not affect how edits are actually applied to files.

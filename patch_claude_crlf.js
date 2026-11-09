@@ -66,6 +66,20 @@
  *           fixes it targeting the wrong site if its anchor text is not unique.
  *           The three patch sites themselves are unchanged in 2.1.251.
  *           Verified working on 2.1.241 and 2.1.251.
+ *
+ *   2.1.0 - Rewrote findDiffPatchPoint for 2.1.319, where the diff function
+ *           actually changed rather than just being renamed. Two breakages:
+ *           the catch block that logs 'leftTempFileProvider.createFile' now
+ *           reads createFile(PATH,CONTENTVAR) instead of createFile(PATH,""),
+ *           and the left-side URI and content variables moved from their own
+ *           'let URIVAR=X.Uri.file(PATH),CONTENTVAR=""' statement into the
+ *           middle of a longer declaration list, so the old 'let ' anchor no
+ *           longer applied.
+ *           The function now anchors on the log string itself and reads the
+ *           content variable from the edit-function call that immediately
+ *           follows the catch block, which is the variable the diff's
+ *           right-hand side is actually built from. Patch 2 is unchanged.
+ *           Verified working on 2.1.314 (old shape) and 2.1.319 (new shape).
  */
 
 const fs = require('fs');
@@ -150,46 +164,75 @@ function findEditFunction(content) {
   return null;
 }
 
-function findDiffPatchPoint(content) {
-  // The diff function contains 'leftTempFileProvider.createFile' in a catch block.
-  // We need to insert our CRLF check after the catch block closes.
-  // Pattern: ...createFile(VAR,"").uri}let VAR=EDITFUNC(CONTENTVAR,...
+function reEscape(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function findDiffPatchPoint(content, editFuncName) {
+  // The diff function logs 'leftTempFileProvider.createFile' in the catch block
+  // that handles a file it could not open. The CRLF check goes in immediately
+  // after that catch block closes, before the content is handed to the edit
+  // function to build the right-hand side of the diff.
+  //
+  // Up to 2.1.314 the catch block ended with the file path and an empty string:
+  //   ...info("leftTempFileProvider.createFile",r),S=t.createFile(r,"").uri}
+  // In 2.1.319 the log call gained a third argument and the createFile call
+  // takes the content variable instead of "":
+  //   ...info("leftTempFileProvider.createFile",r,String(j)),m=t.createFile(r,b).uri}
+  // One pattern covers both: the log string, then anything up to the end of the
+  // info() call, then LEFTURIVAR=PROVIDER.createFile(PATHVAR,<anything>).uri}
   const ltfpIdx = content.indexOf('leftTempFileProvider.createFile');
   if (ltfpIdx === -1) return null;
 
-  // Find the createFile(X,"").uri} that ends the catch block
-  const searchArea = content.substring(ltfpIdx, ltfpIdx + 200);
-  const catchEndMatch = searchArea.match(/createFile\(([\w$]+),""\)\.uri\}/);
+  const searchArea = content.substring(ltfpIdx, ltfpIdx + 300);
+  const catchEndMatch = searchArea.match(
+    /leftTempFileProvider\.createFile"[^{}]{0,80}?\),([\w$]+)=([\w$]+)\.createFile\(([\w$]+),[^)]{0,20}\)\.uri\}/
+  );
   if (!catchEndMatch) return null;
 
-  const filePathVar = catchEndMatch[1]; // the variable holding the file path
+  const leftUriVar = catchEndMatch[1];  // S in 2.1.314, m in 2.1.319
+  const providerVar = catchEndMatch[2]; // t in both
+  const filePathVar = catchEndMatch[3]; // r in both
 
-  // Find the left URI variable and the createFile provider variable
-  // Look backwards from ltfpIdx for: let URIVAR=XX.Uri.file(PATHVAR),CONTENTVAR="";
-  const beforeArea = content.substring(ltfpIdx - 400, ltfpIdx);
-  const uriMatch = beforeArea.match(/let\s+([\w$]+)=[\w$]+\.Uri\.file\(([\w$]+)\),([\w$]+)=""/);
-  if (!uriMatch) return null;
+  const insertAfter = catchEndMatch[0];
+  const insertAfterIdx = ltfpIdx + searchArea.indexOf(insertAfter);
+  const insertEnd = insertAfterIdx + insertAfter.length;
+  const tail = content.substring(insertEnd, insertEnd + 200);
 
-  const leftUriVar = uriMatch[1]; // G in 2.1.71
-  const contentVar = uriMatch[3]; // $ in 2.1.71, Z in 2.1.72
+  // Already patched? The inserted block is the next thing after the catch:
+  //   if(CONTENTVAR.includes("\r\n")){...}
+  const appliedMatch = tail.match(/^if\(([\w$]+)\.includes\(/);
+  if (appliedMatch) {
+    const cv = appliedMatch[1];
+    if (tail.startsWith('if(' + cv + '.includes("' + B + 'r' + B + 'n")){')) {
+      return {
+        filePathVar, leftUriVar, contentVar: cv, providerVar,
+        insertAfter, insertAfterIdx, insertEnd, alreadyApplied: true
+      };
+    }
+    return null;
+  }
 
-  // Find the provider variable: PROVIDER.createFile(VAR,"").uri
-  const providerMatch = searchArea.match(/([\w$]+)\.createFile\([\w$]+,""\)\.uri\}/);
-  if (!providerMatch) return null;
-
-  const providerVar = providerMatch[1]; // v in our version
-
-  // The exact insertion point string
-  const insertAfter = catchEndMatch[0]; // e.g., createFile(K,"").uri}
-  const insertAfterIdx = content.indexOf(insertAfter, ltfpIdx);
+  // Not patched: the next statement passes the left-side content to the edit
+  // function, which names the variable we have to normalize. Taking it from
+  // here rather than from the earlier CONTENTVAR="" declaration means we
+  // normalize exactly what the diff's right-hand side is built from, and it
+  // does not care where in the declaration list that variable was introduced
+  // (2.1.319 moved it out of a 'let URIVAR=...,CONTENTVAR=""' pair).
+  const callMatch = tail.match(
+    new RegExp('^let\\s+[\\w$]+=' + reEscape(editFuncName) + '\\(([\\w$]+),([\\w$]+)\\)')
+  );
+  if (!callMatch) return null;
 
   return {
     filePathVar,
     leftUriVar,
-    contentVar,
+    contentVar: callMatch[1],
     providerVar,
     insertAfter,
-    insertAfterIdx
+    insertAfterIdx,
+    insertEnd,
+    alreadyApplied: false
   };
 }
 
@@ -266,7 +309,7 @@ if (editFunc.alreadyPatched) {
 }
 
 // Find and apply patch 2
-const diffPoint = findDiffPatchPoint(content);
+const diffPoint = findDiffPatchPoint(content, editFunc.funcName);
 if (!diffPoint) {
   console.error('Error: Could not locate the diff function patch point');
   console.error('The file structure may have changed. Manual patching may be needed.');
@@ -274,12 +317,12 @@ if (!diffPoint) {
 }
 
 console.log('Found diff patch point: ' + diffPoint.insertAfter);
-console.log('  URI var:', diffPoint.leftUriVar, ' Provider var:', diffPoint.providerVar, ' Path var:', diffPoint.filePathVar);
+console.log('  URI var:', diffPoint.leftUriVar, ' Provider var:', diffPoint.providerVar,
+            ' Path var:', diffPoint.filePathVar, ' Content var:', diffPoint.contentVar);
 
-// Check if patch 2 is already applied
 const cv = diffPoint.contentVar;
-const insertEnd = diffPoint.insertAfterIdx + diffPoint.insertAfter.length;
-if (content.startsWith('if(' + cv + '.includes(', insertEnd)) {
+const insertEnd = diffPoint.insertEnd;
+if (diffPoint.alreadyApplied) {
   console.log('  -> Patch 2 (diff left-side CRLF) appears to be already applied, skipping.');
 } else {
   const crlf_check = 'if(' + cv + '.includes("' + B + 'r' + B + 'n")){' + cv + '=' + cv + '.replace(' + RN_REGEX + ',' + N_STR + ');' + diffPoint.leftUriVar + '=' + diffPoint.providerVar + '.createFile(' + diffPoint.filePathVar + ',' + cv + ').uri}';
