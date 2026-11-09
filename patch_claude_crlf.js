@@ -80,6 +80,16 @@
  *           follows the catch block, which is the variable the diff's
  *           right-hand side is actually built from. Patch 2 is unchanged.
  *           Verified working on 2.1.314 (old shape) and 2.1.319 (new shape).
+ *
+ *   2.1.1 - Extended Patch 3 for 2.1.319, where the standalone guard
+ *           if(window.IS_FULL_EDITOR)return; was folded into a compound
+ *           disjunction, e.g. if(window.IS_FULL_EDITOR||!t.acceptDiff||y!==null)return;.
+ *           The old regex matched 0 occurrences and reported "already applied"
+ *           while the guard was still active. Patch 3 now also strips the
+ *           IS_FULL_EDITOR disjunct from compound checks (leading, middle, or
+ *           trailing position), keeping the other legitimate IS_FULL_EDITOR
+ *           uses (CSS class toggles, conditional rendering) intact.
+ *           Verified working on 2.1.319.
  */
 
 const fs = require('fs');
@@ -362,11 +372,29 @@ const webviewBakPath = webviewPath + '.bak';
 
 if (fs.existsSync(webviewPath)) {
   let webviewContent = fs.readFileSync(webviewPath, 'utf8');
-  const fullEditorPattern = /if\(window\.IS_FULL_EDITOR\)return;/g;
-  const matches = webviewContent.match(fullEditorPattern);
+  // In <=2.1.313 the guard was the standalone form if(window.IS_FULL_EDITOR)return;.
+  // In 2.1.319 it was folded into a compound disjunction in the same return-early
+  // check, e.g. if(window.IS_FULL_EDITOR||!t.acceptDiff||y!==null)return;. We strip
+  // just the IS_FULL_EDITOR disjunct and its adjacent `||`, anchored on the enclosing
+  // parens so we don't touch the other legitimate IS_FULL_EDITOR uses (CSS class
+  // toggles, conditional rendering, session state).
+  const patterns = [
+    [/\(window\.IS_FULL_EDITOR\|\|/g, '('],          // leading disjunct
+    [/\|\|window\.IS_FULL_EDITOR\|\|/g, '||'],        // middle disjunct
+    [/\|\|window\.IS_FULL_EDITOR\)/g, ')'],           // trailing disjunct
+    [/if\(window\.IS_FULL_EDITOR\)return;/g, ''],    // standalone (old form)
+  ];
 
-  if (matches && matches.length > 0) {
-    // Backup
+  let totalMatches = 0;
+  for (const [re, repl] of patterns) {
+    const m = webviewContent.match(re);
+    if (m) {
+      totalMatches += m.length;
+      webviewContent = webviewContent.replace(re, repl);
+    }
+  }
+
+  if (totalMatches > 0) {
     if (!fs.existsSync(webviewBakPath)) {
       fs.copyFileSync(webviewPath, webviewBakPath);
       console.log('Webview backup saved to:', webviewBakPath);
@@ -374,9 +402,8 @@ if (fs.existsSync(webviewPath)) {
       console.log('Webview backup already exists at:', webviewBakPath);
     }
 
-    webviewContent = webviewContent.replace(fullEditorPattern, '');
     fs.writeFileSync(webviewPath, webviewContent);
-    console.log('  -> Patch 3 applied: removed ' + matches.length + ' IS_FULL_EDITOR check(s) from webview/index.js');
+    console.log('  -> Patch 3 applied: removed ' + totalMatches + ' IS_FULL_EDITOR check(s) from webview/index.js');
   } else {
     console.log('  -> Patch 3 (IS_FULL_EDITOR) appears to be already applied, skipping.');
   }

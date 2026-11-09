@@ -98,10 +98,12 @@ let W=Fk($ ...
 
 Starting in extension v2.1.59, the webview's permission handler skips opening the diff tab when `window.IS_FULL_EDITOR` is `true`, falling back to inline accept/reject in the chat. This was intended to differentiate between editor-tab mode and sidebar mode, but the `IS_FULL_EDITOR` flag is set incorrectly during panel deserialization — VS Code reports the wrong `viewColumn` before the layout is finalized, so the Claude panel in the second tab group is misidentified as being in the first group.
 
-This patch removes the `if(window.IS_FULL_EDITOR)return;` checks from the permission handler in `webview/index.js`, restoring the diff tab behavior:
+This patch removes the `IS_FULL_EDITOR` guard from the permission handler in `webview/index.js`, restoring the diff tab behavior. The guard appears in two shapes:
+
+**Standalone form (ext v2.1.59 through ~v2.1.313):** the check is its own `if`/`return`, applied once per tool handler (Edit, Write). The patch deletes the whole statement.
 
 ```js
-// Before (in webview/index.js permission handler):
+// Before:
 if($.toolName===EditTool.toolName){
   if(window.IS_FULL_EDITOR)return;    // <-- skips diff tab
   let Z=new AbortController;
@@ -115,7 +117,17 @@ if($.toolName===EditTool.toolName){
   let X=await J.openDiff(...);
 ```
 
-The same removal is applied to both the Edit tool and Write tool handlers.
+**Compound form (ext v2.1.319+):** both tool handlers were consolidated into a single callback, and the `IS_FULL_EDITOR` check was folded into a larger disjunction alongside other guards. The patch strips just the `IS_FULL_EDITOR` disjunct and its adjacent `||`, leaving the other guards intact.
+
+```js
+// Before:
+if(window.IS_FULL_EDITOR||!t.acceptDiff||y!==null)return;
+
+// After:
+if(!t.acceptDiff||y!==null)return;
+```
+
+Both forms can coexist in the same version (2.1.319 still has two standalone instances alongside the compound one), so the script applies both sets of patterns in a single run.
 
 ## How the Patch Script Works
 
@@ -141,9 +153,14 @@ The minifier sometimes uses `$` in identifiers — as a standalone variable (the
 
 ### Finding the IS_FULL_EDITOR Checks (Patch 3)
 - **File:** `webview/index.js` in the extension directory
-- **Pattern:** Literal string `if(window.IS_FULL_EDITOR)return;`
-- **Action:** Global removal — all occurrences are deleted (typically 2: one for Edit tool, one for Write tool)
-- **Detection:** If the pattern is not found, assumes already patched
+- **Patterns:**
+  - Standalone: `if(window.IS_FULL_EDITOR)return;` → removed entirely
+  - Compound (leading): `(window.IS_FULL_EDITOR||` → `(`
+  - Compound (middle): `||window.IS_FULL_EDITOR||` → `||`
+  - Compound (trailing): `||window.IS_FULL_EDITOR)` → `)`
+- **Why paren-anchored for the compound forms:** `IS_FULL_EDITOR` is also used legitimately in CSS class ternaries (`window.IS_FULL_EDITOR?cls:""`), conditional rendering (`!window.IS_FULL_EDITOR&&...`), and session state (`isFullEditor:window.IS_FULL_EDITOR`). Anchoring on `(` and `)` matches only the guard disjunction and leaves these intact.
+- **Action:** All four patterns are applied globally in a single run — in 2.1.319 the script removes 2 standalone + 1 compound = 3 occurrences
+- **Detection:** If no patterns match, assumes already patched
 
 ### Safety Features
 - Creates `.bak` backups for both `extension.js` and `webview/index.js` before modifying
