@@ -90,6 +90,25 @@
  *           trailing position), keeping the other legitimate IS_FULL_EDITOR
  *           uses (CSS class toggles, conditional rendering) intact.
  *           Verified working on 2.1.319.
+ *
+ *   2.2.0 - Extension 2.1.323 fixed the CRLF bug upstream, so Patches 1 and 2
+ *           are obsolete from that version on. The diff function now calls a
+ *           CRLF-aware wrapper instead of the edit function directly; the
+ *           wrapper normalizes content and oldStrings, applies the edits, then
+ *           restores CRLF when the file is majority-CRLF.
+ *           The script now detects that wrapper and, when it is present, skips
+ *           Patches 1 and 2 and leaves extension.js completely unmodified (no
+ *           rewrite, no .bak). Only webview/index.js is touched, for Patch 3.
+ *           Failing to locate the diff patch point is no longer fatal either:
+ *           it warns and continues to Patch 3, which is the patch that is still
+ *           relevant on current versions.
+ *           extension.js is now written only when a patch actually changed it,
+ *           rather than unconditionally rewritten on every run.
+ *           Verified on 2.1.323 and 2.1.325 (upstream wrapper present, Patches
+ *           1 and 2 skipped, extension.js left byte-identical to stock) and on
+ *           2.1.314 and 2.1.322 (old shape, all three applied, extension.js
+ *           byte-identical to the previously verified patch output).
+ *           Note there is no 2.1.324; it was never released.
  */
 
 const fs = require('fs');
@@ -178,6 +197,26 @@ function reEscape(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Extension 2.1.323 fixed the CRLF bug upstream by wrapping the edit function in
+// a line-ending-aware helper. The diff function now calls the wrapper instead of
+// the edit function directly:
+//   function qq(e,t){if(!e.includes(`\r\n`)||!yN(t))return hIe(e,t);
+//     let n=hIe(_N(e),t.map((i)=>({...i,oldString:_N(i.oldString)}))),...
+//     return o>s?hN(n,`\r\n`):n}
+// It normalizes content and oldStrings, applies the edits, then restores CRLF
+// when the file is majority-CRLF. That is exactly what Patches 1 and 2 did, so
+// on those versions both are skipped and extension.js is left untouched.
+//
+// Returns true when funcName names a wrapper that handles \r\n itself.
+function isCrlfAwareWrapper(content, funcName, editFuncName) {
+  if (funcName === editFuncName) return false;
+  const declIdx = content.search(new RegExp('function\\s+' + reEscape(funcName) + '\\('));
+  if (declIdx === -1) return false;
+  const body = content.substring(declIdx, declIdx + 600);
+  // Must mention a carriage return AND delegate to the edit function.
+  return body.includes(B + 'r') && body.includes(editFuncName + '(');
+}
+
 function findDiffPatchPoint(content, editFuncName) {
   // The diff function logs 'leftTempFileProvider.createFile' in the catch block
   // that handles a file it could not open. The CRLF check goes in immediately
@@ -223,26 +262,48 @@ function findDiffPatchPoint(content, editFuncName) {
     return null;
   }
 
-  // Not patched: the next statement passes the left-side content to the edit
-  // function, which names the variable we have to normalize. Taking it from
-  // here rather than from the earlier CONTENTVAR="" declaration means we
-  // normalize exactly what the diff's right-hand side is built from, and it
-  // does not care where in the declaration list that variable was introduced
-  // (2.1.319 moved it out of a 'let URIVAR=...,CONTENTVAR=""' pair).
-  const callMatch = tail.match(
-    new RegExp('^let\\s+[\\w$]+=' + reEscape(editFuncName) + '\\(([\\w$]+),([\\w$]+)\\)')
-  );
+  // Not patched: shortly after the catch block, the left-side content is handed
+  // to the edit function (or, from 2.1.323, to a CRLF-aware wrapper around it).
+  // That call names the variable we have to normalize. Taking it from here
+  // rather than from the earlier CONTENTVAR="" declaration means we normalize
+  // exactly what the diff's right-hand side is built from, and it does not care
+  // where in the declaration list that variable was introduced.
+  //
+  //   2.1.319:  }let S=XPe(b,i),E=JPe(i),...
+  //   2.1.325:  }let S,b=o,C;try{S=qq(E,s)}catch(G){...
+  //
+  // So match the first =CALLEE(CONTENTVAR,EDITSVAR) in the tail rather than
+  // insisting the call be the first statement.
+  const callMatch = tail.match(/=([\w$]+)\(([\w$]+),([\w$]+)\)/);
   if (!callMatch) return null;
+
+  const calleeName = callMatch[1];
+
+  // If the callee is not the edit function itself, it may be the upstream
+  // CRLF-aware wrapper added in 2.1.323, in which case Patches 1 and 2 are
+  // obsolete and extension.js should be left alone.
+  if (isCrlfAwareWrapper(content, calleeName, editFuncName)) {
+    return {
+      filePathVar, leftUriVar, contentVar: callMatch[2], providerVar,
+      insertAfter, insertAfterIdx, insertEnd,
+      alreadyApplied: false, upstreamHandlesCrlf: true, wrapperName: calleeName
+    };
+  }
+
+  // Anything else calling into this position is a shape we have not seen; bail
+  // rather than insert normalization in front of code we do not understand.
+  if (calleeName !== editFuncName) return null;
 
   return {
     filePathVar,
     leftUriVar,
-    contentVar: callMatch[1],
+    contentVar: callMatch[2],
     providerVar,
     insertAfter,
     insertAfterIdx,
     insertEnd,
-    alreadyApplied: false
+    alreadyApplied: false,
+    upstreamHandlesCrlf: false
   };
 }
 
@@ -293,8 +354,32 @@ if (!editFunc) {
 
 console.log('Found edit function:', editFunc.funcName + '(' + editFunc.param1 + ',' + editFunc.param2 + ')');
 
-// Check if patch 1 is already applied
-if (editFunc.alreadyPatched) {
+// Probe the diff patch point before changing anything. This is read-only: it
+// tells us whether this extension already handles CRLF itself (2.1.323+), in
+// which case Patches 1 and 2 are obsolete and extension.js is left untouched.
+// The offsets it returns are NOT used for the splice -- Patch 1 inserts text
+// earlier in the file and shifts them -- so Patch 2 re-finds the point against
+// the updated content below.
+const diffPoint = findDiffPatchPoint(content, editFunc.funcName);
+if (!diffPoint) {
+  console.error('Error: Could not locate the diff function patch point');
+  console.error('The file structure may have changed. Manual patching may be needed.');
+  console.error('Patch 3 (webview) will still be attempted.');
+}
+
+const skipCrlfPatches = !diffPoint || diffPoint.upstreamHandlesCrlf;
+let extensionChanged = false;
+
+if (diffPoint && diffPoint.upstreamHandlesCrlf) {
+  console.log('  -> Extension handles CRLF itself via ' + diffPoint.wrapperName +
+              '() (upstream fix, ext 2.1.323+).');
+  console.log('  -> Patches 1 and 2 not needed; extension.js left unmodified.');
+}
+
+// --- Patch 1 ---
+if (skipCrlfPatches) {
+  // nothing to do
+} else if (editFunc.alreadyPatched) {
   console.log('  -> Patch 1 (edit function CRLF) appears to be already applied, skipping.');
 } else {
   // Build patch 1
@@ -315,55 +400,65 @@ if (editFunc.alreadyPatched) {
   // Replacer function, not a replacement string: newStr can contain '$' (the
   // minifier uses it as an identifier), and $&, $`, $', $$, $1 would be substituted.
   content = content.replace(oldStr, function () { return newStr; });
+  extensionChanged = true;
   console.log('  -> Patch 1 applied: CRLF normalization in edit function');
 }
 
-// Find and apply patch 2
-const diffPoint = findDiffPatchPoint(content, editFunc.funcName);
-if (!diffPoint) {
-  console.error('Error: Could not locate the diff function patch point');
-  console.error('The file structure may have changed. Manual patching may be needed.');
-  process.exit(1);
+// --- Patch 2 ---
+if (!skipCrlfPatches) {
+  // Re-find against the current content. Patch 1 inserted text earlier in the
+  // file, so the offsets from the probe above are stale by exactly that length.
+  const dp = findDiffPatchPoint(content, editFunc.funcName);
+  if (!dp) {
+    console.error('Error: Diff patch point went missing after Patch 1 was applied');
+    process.exit(1);
+  }
+
+  console.log('Found diff patch point: ' + dp.insertAfter);
+  console.log('  URI var:', dp.leftUriVar, ' Provider var:', dp.providerVar,
+              ' Path var:', dp.filePathVar, ' Content var:', dp.contentVar);
+
+  if (dp.alreadyApplied) {
+    console.log('  -> Patch 2 (diff left-side CRLF) appears to be already applied, skipping.');
+  } else {
+    const cv = dp.contentVar;
+    const crlf_check = 'if(' + cv + '.includes("' + B + 'r' + B + 'n")){' + cv + '=' + cv + '.replace(' + RN_REGEX + ',' + N_STR + ');' + dp.leftUriVar + '=' + dp.providerVar + '.createFile(' + dp.filePathVar + ',' + cv + ').uri}';
+
+    // Splice at the exact index found. The insertAfter string is not unique in the
+    // file (a second diff function later on can produce the same minified text),
+    // so a plain content.replace() could patch the wrong site.
+    content = content.slice(0, dp.insertEnd) + crlf_check + content.slice(dp.insertEnd);
+    extensionChanged = true;
+    console.log('  -> Patch 2 applied: CRLF normalization in diff left-side');
+  }
 }
 
-console.log('Found diff patch point: ' + diffPoint.insertAfter);
-console.log('  URI var:', diffPoint.leftUriVar, ' Provider var:', diffPoint.providerVar,
-            ' Path var:', diffPoint.filePathVar, ' Content var:', diffPoint.contentVar);
-
-const cv = diffPoint.contentVar;
-const insertEnd = diffPoint.insertEnd;
-if (diffPoint.alreadyApplied) {
-  console.log('  -> Patch 2 (diff left-side CRLF) appears to be already applied, skipping.');
+// Backup and write extension.js only when something in it actually changed.
+// On 2.1.323+ nothing does, so the file is left stock and no .bak is created
+// for a file we never touched.
+if (!extensionChanged) {
+  console.log('\nextension.js unchanged, not rewritten.');
 } else {
-  const crlf_check = 'if(' + cv + '.includes("' + B + 'r' + B + 'n")){' + cv + '=' + cv + '.replace(' + RN_REGEX + ',' + N_STR + ');' + diffPoint.leftUriVar + '=' + diffPoint.providerVar + '.createFile(' + diffPoint.filePathVar + ',' + cv + ').uri}';
+  const bakPath = info.path + '.bak';
+  if (!fs.existsSync(bakPath)) {
+    fs.copyFileSync(info.path, bakPath);
+    console.log('\nBackup saved to:', bakPath);
+  } else {
+    console.log('\nBackup already exists at:', bakPath);
+  }
 
-  // Splice at the exact index found. The insertAfter string is not unique in the
-  // file (a second diff function later on can produce the same minified text),
-  // so a plain content.replace() could patch the wrong site.
-  content = content.slice(0, insertEnd) + crlf_check + content.slice(insertEnd);
-  console.log('  -> Patch 2 applied: CRLF normalization in diff left-side');
-}
+  fs.writeFileSync(info.path, content);
 
-// Backup and write
-const bakPath = info.path + '.bak';
-if (!fs.existsSync(bakPath)) {
-  fs.copyFileSync(info.path, bakPath);
-  console.log('\nBackup saved to:', bakPath);
-} else {
-  console.log('\nBackup already exists at:', bakPath);
-}
-
-fs.writeFileSync(info.path, content);
-
-// Verify the patches by checking raw bytes
-const written = fs.readFileSync(info.path);
-const fkIdx = written.indexOf(Buffer.from('function ' + editFunc.funcName + '('));
-const patchBytes = written.slice(fkIdx + 20, fkIdx + 60).toString('hex');
-if (patchBytes.includes('0d0a')) {
-  console.error('\nWARNING: Detected raw CR/LF bytes in patch area!');
-  console.error('The patch may have incorrect escape sequences.');
-  console.error('Hex:', patchBytes);
-  process.exit(1);
+  // Verify the patches by checking raw bytes
+  const written = fs.readFileSync(info.path);
+  const fkIdx = written.indexOf(Buffer.from('function ' + editFunc.funcName + '('));
+  const patchBytes = written.slice(fkIdx + 20, fkIdx + 60).toString('hex');
+  if (patchBytes.includes('0d0a')) {
+    console.error('\nWARNING: Detected raw CR/LF bytes in patch area!');
+    console.error('The patch may have incorrect escape sequences.');
+    console.error('Hex:', patchBytes);
+    process.exit(1);
+  }
 }
 
 // --- Patch 3: Remove IS_FULL_EDITOR check from webview/index.js ---

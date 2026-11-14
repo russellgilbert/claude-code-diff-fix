@@ -1,6 +1,35 @@
 # Claude Code CRLF Diff Bug — Fix Instructions
 
+## NOTE: Anthropic fixed the CRLF bug in version 2.1.323 of the extension
+
+Anthropic's changelog entry for version 2.1.323 reads:
+
+> [VSCode] Fixed the diff tab not opening for multi-line edits on files with CRLF line endings
+
+The extension now does the line-ending handling itself — it normalizes the file content and the edit strings, applies the edit, then restores CRLF if that's what the file uses. **Patches 1 and 2 are therefore unnecessary on 2.1.323 and later.** Verified on 2.1.323 and 2.1.325 with a CRLF file and a completely unpatched extension: the side-by-side diff tab opens correctly. (There is no 2.1.324; it was never released.)
+
+The script detects this automatically. On 2.1.323 and later it reports:
+
+```
+  -> Extension handles CRLF itself via qq() (upstream fix, ext 2.1.323+).
+  -> Patches 1 and 2 not needed; extension.js left unmodified.
+```
+
+and `extension.js` is not touched at all — not rewritten, and no `.bak` created for it. Only `webview/index.js` is modified, for Patch 3. On 2.1.322 and earlier, all three patches apply as before. The detection looks for the upstream wrapper itself rather than comparing version numbers, so it keeps working on future releases.
+
+### Patch 3 may still be worth applying
+
+Patch 3 is a separate problem and upstream has **not** changed it — the `IS_FULL_EDITOR` guards are still present and unchanged in 2.1.325.
+
+The extension records, once, whether the chat panel occupies the main editing area. If the answer is yes it deliberately skips the diff tab and shows the inline diff in the chat instead, and it also leaves the diff tab's accept checkmarks unconnected. The trouble is that the answer is decided when the panel is created, then saved with the window state and handed back on every reload — it is never reconsidered. So if it ever lands on "yes" when it should be "no", it stays wrong, and every edit from then on skips the diff tab. Reloading does not clear it.
+
+That failure has not recurred on 2.1.323 or 2.1.325 across a reload or a full restart — but its cause was never identified, so it cannot be called fixed. Patch 3 removes the guards entirely, so the stored answer stops mattering.
+
+**If the diff tab opens normally for you, you don't need to run this script at all.** Run it if the diff tab stops opening and you get the inline diff in the chat instead.
+
 ## The Problem
+
+The rest of this document describes the bugs as they were, and still are on extensions before 2.1.323. See the note above for what applies to current versions.
 
 When Claude Code edits a file that uses Windows-style line endings (CRLF / `\r\n`), multi-line edits fail to open in the side-by-side diff preview tab. Instead, only a small inline diff appears in the chat window, with no surrounding context. Single-line edits work fine.
 
