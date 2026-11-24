@@ -91,7 +91,7 @@
  *           uses (CSS class toggles, conditional rendering) intact.
  *           Verified working on 2.1.319.
  *
- *   2.2.0 - Extension 2.1.323 fixed the CRLF bug upstream, so Patches 1 and 2
+ *   2.2.0 - Anthropic fixed the CRLF bug in extension 2.1.323, so Patches 1 and 2
  *           are obsolete from that version on. The diff function now calls a
  *           CRLF-aware wrapper instead of the edit function directly; the
  *           wrapper normalizes content and oldStrings, applies the edits, then
@@ -104,7 +104,7 @@
  *           relevant on current versions.
  *           extension.js is now written only when a patch actually changed it,
  *           rather than unconditionally rewritten on every run.
- *           Verified on 2.1.323 and 2.1.325 (upstream wrapper present, Patches
+ *           Verified on 2.1.323 and 2.1.325 (Anthropic's wrapper present, Patches
  *           1 and 2 skipped, extension.js left byte-identical to stock) and on
  *           2.1.314 and 2.1.322 (old shape, all three applied, extension.js
  *           byte-identical to the previously verified patch output).
@@ -197,7 +197,7 @@ function reEscape(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Extension 2.1.323 fixed the CRLF bug upstream by wrapping the edit function in
+// Anthropic fixed the CRLF bug in extension 2.1.323 by wrapping the edit function in
 // a line-ending-aware helper. The diff function now calls the wrapper instead of
 // the edit function directly:
 //   function qq(e,t){if(!e.includes(`\r\n`)||!yN(t))return hIe(e,t);
@@ -279,8 +279,8 @@ function findDiffPatchPoint(content, editFuncName) {
 
   const calleeName = callMatch[1];
 
-  // If the callee is not the edit function itself, it may be the upstream
-  // CRLF-aware wrapper added in 2.1.323, in which case Patches 1 and 2 are
+  // If the callee is not the edit function itself, it may be the CRLF-aware
+  // wrapper Anthropic added in 2.1.323, in which case Patches 1 and 2 are
   // obsolete and extension.js should be left alone.
   if (isCrlfAwareWrapper(content, calleeName, editFuncName)) {
     return {
@@ -372,7 +372,7 @@ let extensionChanged = false;
 
 if (diffPoint && diffPoint.upstreamHandlesCrlf) {
   console.log('  -> Extension handles CRLF itself via ' + diffPoint.wrapperName +
-              '() (upstream fix, ext 2.1.323+).');
+              '() (Anthropic fixed this in ext 2.1.323).');
   console.log('  -> Patches 1 and 2 not needed; extension.js left unmodified.');
 }
 

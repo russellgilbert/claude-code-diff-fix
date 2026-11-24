@@ -11,21 +11,49 @@ The extension now does the line-ending handling itself — it normalizes the fil
 The script detects this automatically. On 2.1.323 and later it reports:
 
 ```
-  -> Extension handles CRLF itself via qq() (upstream fix, ext 2.1.323+).
+  -> Extension handles CRLF itself via qq() (Anthropic fixed this in ext 2.1.323).
   -> Patches 1 and 2 not needed; extension.js left unmodified.
 ```
 
-and `extension.js` is not touched at all — not rewritten, and no `.bak` created for it. Only `webview/index.js` is modified, for Patch 3. On 2.1.322 and earlier, all three patches apply as before. The detection looks for the upstream wrapper itself rather than comparing version numbers, so it keeps working on future releases.
+and `extension.js` is not touched at all — not rewritten, and no `.bak` created for it. Only `webview/index.js` is modified, for Patch 3. On 2.1.322 and earlier, all three patches apply as before. The detection looks for Anthropic's wrapper function itself rather than comparing version numbers, so it keeps working on future releases.
 
-### Patch 3 may still be worth applying
+### Patch 3 is still needed
 
-Patch 3 is a separate problem and upstream has **not** changed it — the `IS_FULL_EDITOR` guards are still present and unchanged in 2.1.325.
+Patch 3 is a separate problem, and Anthropic has **not** changed it — the `IS_FULL_EDITOR` guards are still present and unchanged in the shipped extension through 2.1.331.
 
-The extension records, once, whether the chat panel occupies the main editing area. If the answer is yes it deliberately skips the diff tab and shows the inline diff in the chat instead, and it also leaves the diff tab's accept checkmarks unconnected. The trouble is that the answer is decided when the panel is created, then saved with the window state and handed back on every reload — it is never reconsidered. So if it ever lands on "yes" when it should be "no", it stays wrong, and every edit from then on skips the diff tab. Reloading does not clear it.
+The extension records whether the chat tab occupies the main editing area. If the answer is yes it deliberately skips the diff tab and shows the inline diff in the chat instead, and it also leaves the diff tab's accept checkmarks unconnected.
 
-That failure has not recurred on 2.1.323 or 2.1.325 across a reload or a full restart — but its cause was never identified, so it cannot be called fixed. Patch 3 removes the guards entirely, so the stored answer stops mattering.
+**Confirmed on 2026-11-24, with a clean before/after on the same session across two versions:**
 
-**If the diff tab opens normally for you, you don't need to run this script at all.** Run it if the diff tab stops opening and you get the inline diff in the chat instead.
+1. Stock 2.1.330 — the affected session opens no diff tab, while another workspace on the same machine, running the same stock extension, works normally.
+2. Patch 3 applied, both windows reloaded — the diff tab opens.
+3. Updated to 2.1.331, which replaces `webview/index.js` and so removes the patch, both windows reloaded — the same session fails again.
+4. Script re-run, both windows reloaded — works again.
+
+The reloads matter: the webview only picks up a changed `webview/index.js` when the window reloads, so a test without one tells you nothing about which version of the file is running.
+
+The failure follows the *session*, not the tab: a brand-new session comes up working, while the affected session kept failing after being reopened, through more than one way of reopening it. Where that session's `IS_FULL_EDITOR` value comes from was never established — only that removing the guards makes it irrelevant.
+
+### Diagnosing it
+
+The extension's output channel distinguishes this from every other reason a diff might not appear. Open it with `Ctrl+Shift+P` → "Output: Focus on Output View" and pick **Claude Code**, then make a multi-line edit:
+
+- **No `diff from` line and no `open_diff` request from the webview** — the guard fired. The chat never asked the extension for a diff at all. This is the `IS_FULL_EDITOR` failure.
+- **`diff from` present, followed by `diff result`** — the extension did open a diff, so the problem is elsewhere (see the notes at the end about VS Code collapsing a side-by-side diff when the editor group is narrow).
+
+### Reopening the tab does not fix it
+
+Worth saying explicitly, because it looks like it should work and it is the first thing you will try. Closing the affected Claude tab and reopening the same session does **not** clear the value — tested on 2026-11-24 both by reopening from the session list and by `Ctrl+Shift+T`, and the session failed both times.
+
+What misleads here is "Claude Code: Open in New Tab", which starts a *new* session rather than reopening the old one. A new session does come up working, which makes it look as though recreating the tab fixed something. It did not; it just produced a different session.
+
+Patch 3 removes the guards entirely, so wherever the value comes from, it stops mattering.
+
+**If the diff tab opens normally for you, you don't need to run this script at all.** Run it when the output channel shows the guard firing.
+
+### After every extension update
+
+Updating the extension replaces `webview/index.js` with a fresh copy, so Patch 3 is lost and the problem can return. Re-run the script after each update and reload your windows. The previous `.bak` is not overwritten.
 
 ## The Problem
 
@@ -129,7 +157,7 @@ Starting in extension v2.1.59, the webview's permission handler skips opening th
 
 This patch removes the `IS_FULL_EDITOR` guards from `webview/index.js`, restoring the diff tab behavior. They appear in two shapes, in two different places:
 
-**Standalone form (ext v2.1.59 onward, still present in 2.1.319):** the check is its own `if`/`return` in the permission handler, once per tool handler (Edit, Write). It controls whether the diff tab opens at all. The patch deletes the whole statement.
+**Standalone form (ext v2.1.59 onward, still present in 2.1.331):** the check is its own `if`/`return` in the permission handler, once per tool handler (Edit, Write). It controls whether the diff tab opens at all. The patch deletes the whole statement.
 
 ```js
 // Before:
@@ -197,7 +225,7 @@ The minifier sometimes uses `$` in identifiers — as a standalone variable (the
   - Compound (middle): `||window.IS_FULL_EDITOR||` → `||`
   - Compound (trailing): `||window.IS_FULL_EDITOR)` → `)`
 - **Why paren-anchored for the compound forms:** `IS_FULL_EDITOR` is also used legitimately in CSS class ternaries (`window.IS_FULL_EDITOR?cls:""`), conditional rendering (`!window.IS_FULL_EDITOR&&...`), and session state (`isFullEditor:window.IS_FULL_EDITOR`). Anchoring on `(` and `)` matches only the guard disjunction and leaves these intact.
-- **Action:** All four patterns are applied globally in a single run — in both 2.1.314 and 2.1.319 the script removes 2 standalone + 1 compound = 3 occurrences, out of 9 total `window.IS_FULL_EDITOR` uses
+- **Action:** All four patterns are applied globally in a single run — in 2.1.314, 2.1.319, 2.1.322, 2.1.323, 2.1.325, 2.1.330 and 2.1.331 the script removes 2 standalone + 1 compound = 3 occurrences, out of 9 total `window.IS_FULL_EDITOR` uses
 - **Detection:** If no patterns match, assumes already patched. This is an absence-of-match test, not a check that the guards are gone, so a future version using a shape none of the four patterns cover would again be reported as already patched while its guard stayed active.
 
 ### Safety Features
@@ -207,10 +235,10 @@ The minifier sometimes uses `$` in identifiers — as a standalone variable (the
 
 ## Notes
 
-- Patches 1 & 2 (CRLF) were developed and tested on extension versions 2.1.56 through 2.1.319.
-- Patch 3 (IS_FULL_EDITOR) was developed and tested on extension versions 2.1.59 through 2.1.319. It is not needed on versions before 2.1.59 since the IS_FULL_EDITOR check did not exist yet.
+- Patches 1 & 2 (CRLF) were developed and tested on extension versions 2.1.56 through 2.1.322. 2.1.322 is the last version that needs them; from 2.1.323 the script skips them.
+- Patch 3 (IS_FULL_EDITOR) was developed and tested on extension versions 2.1.59 through 2.1.331, where the guards are still 2 standalone + 1 compound out of 9 `window.IS_FULL_EDITOR` uses, unchanged since 2.1.314. It is not needed on versions before 2.1.59 since the IS_FULL_EDITOR check did not exist yet.
 - Breakages up to and including 2.1.251 were all in the script's regexes rather than the extension's logic. 2.1.319 was the first one where the diff function itself changed. When a run fails, check for a new identifier shape first, then for a changed statement shape around the anchor.
-- **2.1.319 added a path check that can change what the left side of the diff contains.** Before opening the diff, the extension calls `VPe`, which walks the file's path with `lstat`, `opendirNofollow` and `readlink` looking for anything that may lead off the machine — network mounts, UNC or WSL paths, symlinks leaving the tree, unreadable ancestry. The open workspace folders are passed in as the `anchor`: trusted roots that let the walk short-circuit. They are **not** a containment boundary, so an ordinary local file outside the workspace still passes. When the check does fail, the extension throws `"Not opened: the path may lead to another machine"`, appends `(file not read)` to the diff tab title, and builds the left side from the edit's `oldString` values joined with newlines rather than from the file on disk. The diff tab still opens, but the left side is not the real file. This is upstream behavior, not something the patch changes. If a diff's left side looks wrong, check the tab title for `(file not read)` first.
+- **2.1.319 added a path check that can change what the left side of the diff contains.** Before opening the diff, the extension calls `VPe`, which walks the file's path with `lstat`, `opendirNofollow` and `readlink` looking for anything that may lead off the machine — network mounts, UNC or WSL paths, symlinks leaving the tree, unreadable ancestry. The open workspace folders are passed in as the `anchor`: trusted roots that let the walk short-circuit. They are **not** a containment boundary, so an ordinary local file outside the workspace still passes. When the check does fail, the extension throws `"Not opened: the path may lead to another machine"`, appends `(file not read)` to the diff tab title, and builds the left side from the edit's `oldString` values joined with newlines rather than from the file on disk. The diff tab still opens, but the left side is not the real file. This is how Anthropic's extension behaves, not something the patch changes. If a diff's left side looks wrong, check the tab title for `(file not read)` first.
 - All patches tested on both Windows and Linux (Remote SSH).
 - The underlying bug should ideally be fixed in the extension itself. Consider upvoting or commenting on the relevant issue at https://github.com/anthropics/claude-code/issues if one exists.
 - The patch only modifies the side-by-side diff preview mechanism. It does not affect how edits are actually applied to files.
